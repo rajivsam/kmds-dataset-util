@@ -1,16 +1,55 @@
 # Python cache and virtual environment
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 .venv/
 venv/
+env/
+ENV/
 .env
+.env.*
+
+# Package/build artifacts
+*.egg-info/
+build/
+dist/
 
 # Jupyter / notebook checkpoints
 .ipynb_checkpoints/
+*.nbconvert.ipynb
 
 # OS/editor files
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # Project data staging area
 /data/
+
+# Common data science / ML outputs
+*.parquet
+*.feather
+*.pq
+*.pickle
+*.pkl
+*.joblib
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.onnx
+*.keras
+*.db
+*.sqlite3
