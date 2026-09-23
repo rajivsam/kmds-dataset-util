@@ -1,0 +1,9 @@
+version: 1
+dataset_name: olist
+operation: download
+source:
+  type: kaggle
+  kaggle_dataset: olistbr/brazilian-ecommerce
+destination:
+  path: /home/rajiv/programming/kmds-dataset-util/data/raw/olist
+  format: csv

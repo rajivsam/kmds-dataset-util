@@ -1,0 +1,5 @@
+PyYAML>=6.0
+opendatasets>=0.1.22
+
+[dev]
+pytest>=8.0

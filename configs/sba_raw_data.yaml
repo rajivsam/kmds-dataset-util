@@ -1,0 +1,9 @@
+version: 1
+dataset_name: sba
+operation: download
+source:
+  type: http
+  url: https://data.sba.gov/sites/default/files/uploaded_resources/FOIA_7a_FY2020_Present_asof_260630.csv
+destination:
+  path: /home/rajiv/programming/kmds-dataset-util/data/raw/sba
+  format: csv

@@ -1,0 +1,13 @@
+version: 1
+dataset_name: sba
+operation: prepare
+representation: tabular
+task_characterization: classification
+staging_dir: ./data/raw/sba
+prepared_dataset_dir: /home/rajiv/programming/kmds-dataset-util/data/prepared/sba
+output:
+  path: /home/rajiv/programming/kmds-dataset-util/data/prepared/sba
+  format: csv
+raw_data_dictionary_path: ./data/raw/sba/data_dictionary_raw.csv
+data_dictionary_path: ./data/raw/sba/data_dictionary_raw.csv
+processed_data_dictionary_path: ./data/raw/sba/data_dictionary_raw.csv

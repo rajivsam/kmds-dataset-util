@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: kmds-dataset-util
+Version: 0.1.0
+Summary: KMDS dataset utility package for dataset preparation workflows
+Requires-Python: >=3.11
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: kaggle>=1.6.0
+Requires-Dist: pandas>=3.0.5
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ipykernel>=6.0; extra == "dev"

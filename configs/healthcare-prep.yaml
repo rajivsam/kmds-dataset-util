@@ -1,0 +1,13 @@
+version: 1
+dataset_name: healthcare-analytics-patient-flow-data
+operation: prepare
+representation: tabular
+task_characterization: time_series
+staging_dir: ./data/raw/healthcare-analytics-patient-flow-data
+prepared_dataset_dir: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data
+output:
+  path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data
+  format: csv
+raw_data_dictionary_path: ./data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
+data_dictionary_path: ./data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
+processed_data_dictionary_path: ./data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv

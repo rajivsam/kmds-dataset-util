@@ -1,0 +1,9 @@
+version: 1
+dataset_name: healthcare-analytics-patient-flow-data
+operation: download
+source:
+  type: kaggle
+  kaggle_dataset: hassanjameelahmed/healthcare-analytics-patient-flow-data
+destination:
+  path: /home/rajiv/programming/kmds-dataset-util/data/raw/healthcare-analytics-patient-flow-data
+  format: csv
