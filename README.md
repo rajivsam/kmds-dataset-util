@@ -1,6 +1,19 @@
 # KMDS Dataset Utility
 
-A config-driven dataset utility for downloading, inspecting, transforming, and writing canonical KMDS datasets. The goal is to prime the model development workflow for a KMDS pipeline.
+## Overview
+
+**KMDS Dataset Utility** (`kmds-dataset-util`) is a config-driven utility designed to simplify data preparation for machine learning workflows. It addresses a common bottleneck for engineering teams building ML features by streamlining data extraction from diverse sources—such as operational datastores or data lakes—into canonical representations ready for model development.
+
+The utility structures the data preparation pipeline into two distinct, manageable phases:
+1. **Data Ingestion:** Fetching and staging raw data from remote endpoints or data stores.
+2. **Canonical Transformation:** Cleaning, transforming, and formatting the staged data into a consistent representation optimized for specific ML tasks.
+
+## Key Features
+
+* **Multi-Representation Support:** Engineered to handle workflows for both **tabular** and **graph-based** learning.
+* **Task-Driven EDA & Preparation:** Tailors data processing configs specifically to your target task characterization (e.g., classification, clustering, or time-series).
+* **Searchable Workflows:** Lays the foundation for documenting canonical data science tasks as searchable, reproducible workflows that bridge communication gaps between technical and non-technical stakeholders.
+* **Open Source:** Proudly free and open-source under the KMDS ecosystem.
 
 A kmds-dataset-util project is organized as a pair of notebooks:
 
@@ -49,6 +62,8 @@ output:
 - `transform`: convert to canonical data forms
 - `write`: persist the prepared dataset
 
-## Current status
+## Current Status
+
+While a limited set of ML tasks and workflows are currently supported, active development is focused on expanding supported configurations. Stay tuned as we build out a more comprehensive suite of tools to fully automate the documentation and generation of canonical data science pipelines.
 
 This implementation now matches the revised KMDS requirements by supporting the prepare workflow, representation selection, task characterization, and explicit bootstrap config output paths.
