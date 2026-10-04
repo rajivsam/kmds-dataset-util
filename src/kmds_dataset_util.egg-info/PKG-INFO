@@ -5,7 +5,9 @@ Summary: KMDS dataset utility package for dataset preparation workflows
 Requires-Python: >=3.11
 Requires-Dist: PyYAML>=6.0
 Requires-Dist: kaggle>=1.6.0
+Requires-Dist: matplotlib>=3.11.2
 Requires-Dist: pandas>=3.0.5
+Requires-Dist: scipy>=1.14.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: ipykernel>=6.0; extra == "dev"

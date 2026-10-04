@@ -10,8 +10,9 @@ output:
   format: csv
 raw_data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/seattle-police-department-911-incident-response/data_dictionary_raw.csv
 data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/seattle-police-department-911-incident-response/data_dictionary_raw.csv
-arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/seattle-police-department-911-incident-response/arrival_intensity.csv
-arrival_intensity_window: 30m
-arrival_intensity_alignment_status: no_alignment_needed
-arrival_intensity_alignment_message: Algorithm selected 30m; window unit=minute; intensity
-  unit=count per minute; integer alignment did not change the grid.
+arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/seattle-police-department-911-incident-response/seattle_911_calls_arrival_intensity.csv
+arrival_intensity_window: 5m
+arrival_intensity_reference_window: 5m
+arrival_intensity_fano_interval:
+- 0.9417052758243266
+- 1.0600206300896222

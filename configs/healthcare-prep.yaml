@@ -9,15 +9,10 @@ output:
   path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data
   format: csv
 raw_data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
-data_dictionary_path: data/raw/healthcare-analytics-patient-flow-data/data_dictionary_processed.csv
-processed_data_dictionary_path: data/raw/healthcare-analytics-patient-flow-data/data_dictionary_processed.csv
-dictionary_files:
-  data_dictionary: data/raw/healthcare-analytics-patient-flow-data/data_dictionary_processed.csv
-  raw_data_dictionary: data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
-  analysis_data_dictionary: data/raw/healthcare-analytics-patient-flow-data/data_dictionary_analysis.csv
-hourly_arrivals_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data/hourly_arrivals.csv
-arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data/arrival_intensity.csv
-arrival_intensity_window: 12h
-arrival_intensity_alignment_status: no_alignment_needed
-arrival_intensity_alignment_message: Algorithm selected 12h; window unit=hour; intensity
-  unit=count per hour; integer alignment did not change the grid.
+data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
+arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data/hospital_arrival_intensity.csv
+arrival_intensity_window: 15m
+arrival_intensity_reference_window: 5m
+arrival_intensity_fano_interval:
+- 0.8958460217197702
+- 1.1097989842066647
