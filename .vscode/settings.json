@@ -17,5 +17,11 @@
   "terminal.integrated.env.linux": {
     "VIRTUAL_ENV": "${workspaceFolder}/.venv",
     "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}"
+  },
+  "chat.tools.terminal.autoApprove": {
+    "/^cat configs/seattle-911-prep\\.yaml; python - <<'E'\nimport json\nnb=json\\.load\\(open\\('notebooks/seattle_911_calls_eda\\.ipynb'\\)\\)\nfor i,c in enumerate\\(nb\\['cells'\\]\\):\n    print\\('---',i,c\\['cell_type'\\]\\);print\\(''\\.join\\(c\\['source'\\]\\)\\)\nE$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

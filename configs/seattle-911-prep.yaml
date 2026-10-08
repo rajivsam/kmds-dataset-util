@@ -14,5 +14,5 @@ arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/
 arrival_intensity_window: 5m
 arrival_intensity_reference_window: 5m
 arrival_intensity_fano_interval:
-- 0.9417052758243266
-- 1.0600206300896222
+- 0.9415476725402419
+- 1.0601877200918566
