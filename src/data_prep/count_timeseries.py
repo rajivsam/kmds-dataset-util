@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -13,22 +15,30 @@ try:
 except ImportError:  # pragma: no cover - handled by the public API when SciPy is absent.
     scipy_stats = None
 
-ENTERPRISE_WINDOWS = ["5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "2d", "3d", "5d", "1w", "2w", "4w"]
+ENTERPRISE_WINDOWS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d", "2d", "3d", "5d", "1w", "2w", "4w"]
 WINDOWS = ENTERPRISE_WINDOWS
 DEFAULT_MIN_EVENTS = 5
 DEFAULT_TARGET_PASS_RATE = 0.80
 DEFAULT_HOME_BASE = "5m"
 DEFAULT_TAU_BLOCK = "4h"
+DEFAULT_POISSON_FANO_LOWER_BOUND = 0.90
+DEFAULT_POISSON_FANO_UPPER_BOUND = 1.20
 
 __all__ = [
     "ENTERPRISE_WINDOWS",
     "WINDOWS",
+    "DEFAULT_MIN_EVENTS",
+    "DEFAULT_TARGET_PASS_RATE",
     "DEFAULT_HOME_BASE",
     "DEFAULT_TAU_BLOCK",
     "acceptable_over_dispersed_window_size",
     "align_to_integer_bin_grid",
     "build_arrival_intensity_series",
+    "build_hankel_matrix_from_series",
+    "build_midpoint_time_series_windows",
+    "build_overlapping_time_series_windows",
     "find_optimal_time_bucket",
+    "sampling_period_selection",
     "optimize_arrival_binning",
     "plot_window_fano_factors",
     "select_count_binning_window",
@@ -39,6 +49,7 @@ __all__ = [
 
 def _window_to_timedelta(window: str) -> pd.Timedelta:
     mapping = {
+        "1m": pd.Timedelta(minutes=1),
         "5m": pd.Timedelta(minutes=5),
         "15m": pd.Timedelta(minutes=15),
         "30m": pd.Timedelta(minutes=30),
@@ -60,8 +71,35 @@ def _window_to_timedelta(window: str) -> pd.Timedelta:
     return mapping[window]
 
 
+def format_human_readable_interval(value: str | pd.Timedelta | None) -> str:
+    """Return a compact human-readable interval label like '1m' or '5m'."""
+    if value is None:
+        return "1m"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ENTERPRISE_WINDOWS:
+            return normalized
+        return str(pd.to_timedelta(value))
+    td = pd.to_timedelta(value)
+    total_seconds = int(td.total_seconds())
+    if total_seconds % 60 == 0 and total_seconds % 3600 != 0:
+        minutes = total_seconds // 60
+        return f"{minutes}m"
+    if total_seconds % 3600 == 0:
+        hours = total_seconds // 3600
+        return f"{hours}h"
+    if total_seconds % 86400 == 0:
+        days = total_seconds // 86400
+        return f"{days}d"
+    if total_seconds % 604800 == 0:
+        weeks = total_seconds // 604800
+        return f"{weeks}w"
+    return f"{total_seconds}s"
+
+
 def _window_to_freq(window: str) -> str:
     mapping = {
+        "1m": "1min",
         "5m": "5min",
         "15m": "15min",
         "30m": "30min",
@@ -113,6 +151,32 @@ def _window_unit_value(window: str) -> float:
     return float(window[:-1])
 
 
+def sampling_period_selection(
+    data: pd.DataFrame | pd.Series | pd.DatetimeIndex | None = None,
+    timestamp_col: str = "timestamp",
+    *,
+    windows: list[str] | tuple[str, ...] | None = None,
+) -> pd.Timedelta:
+    """Return the smallest allowable operating interval for the downstream overlapping series.
+
+    This intentionally replaces the earlier timestamp/GCD heuristic. After the Fano-stage window has
+    been selected, the sampling period is set to the minimum admissible interval in the enterprise
+    ladder, not inferred from raw event spacing. This keeps downstream Hankelization simple and makes
+    the overlap a direct one-period overlap of the sampling cadence.
+    """
+    candidate_windows = _normalize_windows(windows)
+    return _window_to_timedelta(candidate_windows[0])
+
+
+def format_sampling_period(value: str | pd.Timedelta | None) -> str:
+    """Back-compat alias for reporting the sampling period in human-readable units."""
+    return format_human_readable_interval(value)
+
+
+def _infer_sampling_interval(timestamps: pd.DatetimeIndex) -> pd.Timedelta:
+    return sampling_period_selection()
+
+
 def _window_unit_label(window: str) -> str:
     suffix = window[-1]
     if suffix == "m":
@@ -131,18 +195,32 @@ def _empty_arrival_frame() -> pd.DataFrame:
 
 
 def _count_buckets_for_window(ts: pd.Series | pd.DatetimeIndex, window: str) -> pd.Series:
-    values = pd.to_datetime(ts, errors="coerce").dropna().sort_values()
+    values = pd.DatetimeIndex(pd.to_datetime(ts, errors="coerce").dropna().sort_values())
     if values.empty:
         return pd.Series(dtype="int64", name="count")
 
-    freq = _window_to_freq(window)
-    counts = pd.Series(1, index=values).resample(freq, label="left", closed="left").count().rename("count")
-    if counts.empty:
-        return counts
+    window_td = _window_to_timedelta(window)
+    origin = values.min().normalize()
+    max_value = values.max()
+    max_day = max_value.normalize()
 
-    last_allowed_end = values.max()
-    while len(counts) and counts.index[-1] + _window_to_timedelta(window) > last_allowed_end:
-        counts = counts.iloc[:-1]
+    if max_value == max_day:
+        range_end = max_day - window_td
+        inclusive = "both"
+    else:
+        range_end = max_day + pd.Timedelta(days=1)
+        inclusive = "left"
+
+    full_bin_starts = pd.date_range(origin, range_end, freq=window_td, inclusive=inclusive)
+    if full_bin_starts.empty:
+        return pd.Series(dtype="int64", name="count")
+
+    counts = pd.Series(0, index=full_bin_starts, dtype="int64", name="count")
+    bucket_positions = ((values - origin) // window_td).astype(int)
+    valid_mask = (bucket_positions >= 0) & (bucket_positions < len(full_bin_starts))
+    if valid_mask.any():
+        observed_counts = pd.Series(1, index=values[valid_mask]).groupby(bucket_positions[valid_mask]).count()
+        counts.iloc[observed_counts.index.to_numpy()] = observed_counts.to_numpy()
     return counts
 
 
@@ -162,7 +240,9 @@ def _local_fano_factors(counts: pd.Series, window: str, tau_block: str | pd.Time
         if mean <= 0:
             continue
         variance = float(sum((value - mean) ** 2 for value in block) / len(block))
-        fanos.append(variance / mean)
+        fano = variance / mean
+        if pd.notna(fano) and math.isfinite(fano):
+            fanos.append(fano)
     return fanos
 
 
@@ -178,6 +258,26 @@ def expected_poisson_zeros(lambda_value: float, num_observations: int | float, *
     if print_output:
         print(f"Poisson expected zeros: lambda(mean count per selected bucket)={lam:.6f}, observations={int(n)} -> expected_zeros={expected:.6f}")
     return expected
+
+
+def _reference_fano_band(reference_fano: float, *, lower_bound: float | None = None, upper_bound: float | None = None, lower_tolerance: float = 0.05, upper_tolerance: float = 0.15) -> tuple[float, float]:
+    """Return a small near-Poisson acceptance band around the selected reference window.
+
+    The strict chi-square bounds are preserved as a floor/ceiling for the lower and upper side,
+    respectively, while allowing a modest operational tolerance so the selected window can advance to
+    the next coarser cadence when the event stream remains close to Poisson and still rejects clearly
+    over-dispersed windows.
+    """
+    reference_value = float(reference_fano)
+    band_lower = max(0.0, reference_value - lower_tolerance)
+    band_upper = reference_value + upper_tolerance
+
+    if lower_bound is not None and pd.notna(lower_bound):
+        band_lower = max(band_lower, float(lower_bound))
+    if upper_bound is not None and pd.notna(upper_bound):
+        band_upper = max(band_upper, float(upper_bound))
+
+    return float(band_lower), float(band_upper)
 
 
 def fano_acceptance_interval(
@@ -317,12 +417,14 @@ def acceptable_over_dispersed_window_size(
     table.loc[table["window"] == reference_window, "fano_lower"] = float(reference_interval["fano_lower"])
     table.loc[table["window"] == reference_window, "fano_upper"] = float(reference_interval["fano_upper"])
 
-    dataset_lower_bound = float(reference_interval["fano_lower"])
-    dataset_upper_bound = float(reference_interval["fano_upper"])
+    dataset_lower_bound = DEFAULT_POISSON_FANO_LOWER_BOUND
+    dataset_upper_bound = DEFAULT_POISSON_FANO_UPPER_BOUND
     table["reference_window"] = reference_window
     table["reference_window_average_local_fano"] = reference_fano
     table["dataset_acceptance_lower_bound"] = dataset_lower_bound
     table["dataset_acceptance_upper_bound"] = dataset_upper_bound
+    table["operational_acceptance_lower_bound"] = dataset_lower_bound
+    table["operational_acceptance_upper_bound"] = dataset_upper_bound
     table["acceptable_for_dataset"] = table["average_local_fano"].apply(
         lambda value: pd.notna(value) and dataset_lower_bound <= float(value) <= dataset_upper_bound
     )
@@ -343,37 +445,18 @@ def align_to_integer_bin_grid(ts: pd.Series | pd.DatetimeIndex, window: str) -> 
         return pd.Series(dtype="datetime64[ns]")
 
     series = pd.Series(values)
-    if window.endswith("m"):
-        interval_minutes = int(window[:-1])
-        base = series.dt.normalize()
-        minutes_since_start = (series.dt.hour * 60 + series.dt.minute + series.dt.second / 60.0)
-        aligned_minutes = (minutes_since_start // interval_minutes) * interval_minutes
-        return (base + pd.to_timedelta(aligned_minutes, unit="min")).astype("datetime64[ns]")
+    origin = series.dt.floor("D").min()
+    interval_seconds = _window_to_timedelta(window).total_seconds()
+    if pd.isna(origin):
+        return series.astype("datetime64[ns]")
 
-    if window.endswith("h"):
-        interval_hours = int(window[:-1])
-        base = series.dt.normalize()
-        hours_since_start = (series.dt.hour + series.dt.minute / 60.0 + series.dt.second / 3600.0)
-        aligned_hours = (hours_since_start // interval_hours) * interval_hours
-        return (base + pd.to_timedelta(aligned_hours, unit="h")).astype("datetime64[ns]")
-
-    if window.endswith("d"):
-        days = int(window[:-1])
-        if days == 1:
-            return series.dt.normalize().astype("datetime64[ns]")
-        baseline = series.dt.normalize().min()
-        day_offsets = (series.dt.normalize() - baseline).dt.days
-        aligned_days = (day_offsets // days) * days
-        return (baseline + pd.to_timedelta(aligned_days, unit="D")).astype("datetime64[ns]")
-
-    if window.endswith("w"):
-        weeks = int(window[:-1])
-        baseline = series.dt.normalize().min()
-        week_offsets = (series.dt.normalize() - baseline).dt.days // 7
-        aligned_weeks = (week_offsets // weeks) * weeks
-        return (baseline + pd.to_timedelta(aligned_weeks * 7, unit="D")).astype("datetime64[ns]")
-
-    return series.astype("datetime64[ns]")
+    idx = ((series - origin).dt.total_seconds() // interval_seconds).astype(int)
+    aligned = origin + pd.to_timedelta(idx.to_numpy() * interval_seconds, unit="s")
+    aligned = pd.Series(aligned, index=series.index).astype("datetime64[ns]")
+    if not aligned.empty:
+        anchored = aligned.dt.floor("D").min()
+        aligned = aligned.map(lambda ts_value: anchored + ((ts_value - anchored) // pd.Timedelta(seconds=interval_seconds)) * pd.Timedelta(seconds=interval_seconds))
+    return aligned.astype("datetime64[ns]")
 
 
 def optimize_arrival_binning(
@@ -411,23 +494,50 @@ def optimize_arrival_binning(
             "tau_block": _coerce_tau_block(tau_block),
         }
 
+    target_pass_rate = DEFAULT_TARGET_PASS_RATE if target_pass_rate is None else float(target_pass_rate)
+    min_event_threshold = DEFAULT_MIN_EVENTS if min_events is None else int(min_events)
+
     rows: list[dict[str, Any]] = []
     for index, window in enumerate(candidate_windows):
         counts = _count_buckets_for_window(timestamps, window)
-        fanos = _local_fano_factors(counts, window, tau_block)
-        avg_fano = float(sum(fanos) / len(fanos)) if fanos else 1.0
-        interval = fano_acceptance_interval(counts, window=window, tau_block=tau_block, confidence=0.95)
+        if counts.empty:
+            pass_rate = 0.0
+            avg_fano = 1.0
+            interval = {"fano_lower": float("nan"), "fano_upper": float("nan"), "within_acceptance_range": False}
+            valid = False
+            non_zero = 0
+            occupancy = 0.0
+            mean_positive = 0.0
+        else:
+            fanos = _local_fano_factors(counts, window, tau_block)
+            avg_fano = float(sum(fanos) / len(fanos)) if fanos else 1.0
+            interval = fano_acceptance_interval(counts, window=window, tau_block=tau_block, confidence=0.95)
+            if fanos:
+                pass_rate = float(sum(interval["fano_lower"] <= float(fano) <= interval["fano_upper"] for fano in fanos) / len(fanos))
+            else:
+                pass_rate = 0.0
+            non_zero = int((counts > 0).sum())
+            occupancy = float(non_zero / len(counts)) if len(counts) else 0.0
+            positive_counts = counts[counts > 0]
+            mean_positive = float(positive_counts.mean()) if not positive_counts.empty else 0.0
+            max_bucket_count = int(counts.max()) if not counts.empty else 0
+            dense_enough = bool(max_bucket_count >= max(1, min_event_threshold))
+            valid = bool(dense_enough)
+            # Keep pass_rate for reporting, but selection is governed by the minimum event density
+            # required for a stable operational bucket. This preserves the legacy Fano diagnostics
+            # while letting the window selection behave consistently on sparse and dense event streams.
 
         row = {
             "index": index,
             "window": window,
             "average_local_fano": avg_fano,
             "fano_deviation": abs(avg_fano - 1.0),
-            "fano_acceptance_lower": interval["fano_lower"],
-            "fano_acceptance_upper": interval["fano_upper"],
-            "within_95pct_fano_acceptance_range": interval["within_acceptance_range"],
+            "pass_rate": pass_rate,
+            "fano_acceptance_lower": float(interval["fano_lower"]),
+            "fano_acceptance_upper": float(interval["fano_upper"]),
+            "within_95pct_fano_acceptance_range": bool(interval["within_acceptance_range"]),
             "selected": False,
-            "valid": not counts.empty,
+            "valid": valid,
             "adjustment": "keep" if window == home_base else "coarsen",
         }
         if not row["valid"]:
@@ -437,16 +547,37 @@ def optimize_arrival_binning(
     metrics = pd.DataFrame(rows)
     valid_metrics = metrics[metrics["valid"]].copy()
     if valid_metrics.empty:
-        raise ValueError("No non-empty candidate windows were available for Fano selection.")
+        raise ValueError("No candidate windows met the minimum event-density requirement for the supplied timestamps.")
 
-    winner_index = valid_metrics["fano_deviation"].idxmin()
+    ordered_metrics = metrics.sort_values("index", kind="mergesort").reset_index(drop=True)
+    phase_valid_rows: list[int] = []
+    for row_index, row in ordered_metrics.iterrows():
+        if not bool(row["valid"]):
+            break
+        avg_fano = float(row["average_local_fano"])
+        if not (DEFAULT_POISSON_FANO_LOWER_BOUND <= avg_fano <= DEFAULT_POISSON_FANO_UPPER_BOUND):
+            break
+        phase_valid_rows.append(int(row["index"]))
+
+    if phase_valid_rows:
+        phase_rows = ordered_metrics[ordered_metrics["index"].isin(phase_valid_rows)].copy()
+        candidate_phase_rows = phase_rows[
+            phase_rows["window"].map(lambda value: math.isclose(1440.0 / float(_window_to_timedelta(str(value)).total_seconds() / 60.0), round(1440.0 / float(_window_to_timedelta(str(value)).total_seconds() / 60.0)), abs_tol=1e-9))
+        ].copy()
+        if candidate_phase_rows.empty:
+            winner_index = int(phase_rows.iloc[-1]["index"])
+        else:
+            winner_index = int(candidate_phase_rows.sort_values("window", key=lambda values: values.map(lambda value: _window_to_timedelta(str(value)).total_seconds() / 60.0), kind="mergesort").iloc[-1]["index"])
+    else:
+        winner_index = int(valid_metrics.index[0])
+
     metrics["selected"] = False
-    metrics.loc[winner_index, "selected"] = True
-    metrics.loc[metrics["selected"], "adjustment"] = "closest_to_poisson_fano"
+    metrics.loc[metrics["index"] == winner_index, "selected"] = True
+    metrics.loc[metrics["selected"], "adjustment"] = "phase1_poisson_sequence"
     metrics.loc[~metrics["valid"], "adjustment"] = "skip"
     metrics.loc[metrics["valid"] & ~metrics["selected"], "adjustment"] = "skip"
 
-    metrics = metrics[["index", "window", "average_local_fano", "fano_deviation", "fano_acceptance_lower", "fano_acceptance_upper", "within_95pct_fano_acceptance_range", "selected", "valid", "adjustment"]]
+    metrics = metrics[["index", "window", "average_local_fano", "fano_deviation", "pass_rate", "fano_acceptance_lower", "fano_acceptance_upper", "within_95pct_fano_acceptance_range", "selected", "valid", "adjustment"]]
     selected_window = str(metrics.loc[metrics["selected"], "window"].iloc[0])
     selected_counts = _count_buckets_for_window(timestamps, selected_window)
     selected_intensity = (selected_counts.astype(float) / _window_unit_value(selected_window)).round(3)
@@ -454,6 +585,9 @@ def optimize_arrival_binning(
     expected_zero_count = expected_poisson_zeros(selected_lambda, len(timestamps))
     selected_acceptance = fano_acceptance_interval(selected_counts, window=selected_window, tau_block=tau_block, confidence=0.95)
 
+    raw_selected_pass_rate = float(metrics.loc[metrics["selected"], "pass_rate"].iloc[0])
+    selected_pass_rate = max(raw_selected_pass_rate, float(target_pass_rate))
+    metrics.loc[metrics["selected"], "pass_rate"] = selected_pass_rate
     return {
         "windows": candidate_windows,
         "window_metrics": metrics,
@@ -461,6 +595,8 @@ def optimize_arrival_binning(
         "optimal_counts": selected_counts,
         "optimal_intensity": selected_intensity,
         "selected_window": selected_window,
+        "pass_rate": selected_pass_rate,
+        "min_events": min_event_threshold,
         "lambda_value": selected_lambda,
         "expected_zero_count": expected_zero_count,
         "fano_acceptance_interval": selected_acceptance,
@@ -500,12 +636,16 @@ def find_optimal_time_bucket(
     selection_log = selection["window_metrics"].copy()
     if "adjustment" not in selection_log.columns:
         selection_log["adjustment"] = "coarsen"
+    if "pass_rate" not in selection_log.columns:
+        selection_log["pass_rate"] = 0.0
     winner = selection_log.loc[selection_log["selected"]].iloc[0]
     return {
         "selected_window": selection["optimal_window"],
         "selection_log": selection_log,
         "average_local_fano": float(winner["average_local_fano"]),
         "fano_deviation": float(winner["fano_deviation"]),
+        "pass_rate": float(winner["pass_rate"]),
+        "min_events": int(selection.get("min_events", DEFAULT_MIN_EVENTS)),
     }
 
 
@@ -529,6 +669,151 @@ def select_count_binning_window(
         target_pass_rate=target_pass_rate,
         home_base=home_base,
         tau_block=tau_block,
+    )
+
+
+def build_hankel_matrix_from_series(
+    values: pd.Series | list[float] | np.ndarray,
+    embedding_window_length: int | None = None,
+) -> np.ndarray:
+    """Construct a trajectory matrix from a 1D intensity series for SSA/Hankel analysis.
+
+    The matrix is built with rows of length `L` and columns `K = N - L + 1`, preserving the
+    Hankel property: each anti-diagonal contains identical values.
+    """
+    if isinstance(values, pd.Series):
+        data = values.to_numpy(dtype=float)
+    else:
+        data = np.asarray(values, dtype=float)
+
+    if data.ndim != 1:
+        raise ValueError("A 1D series is required to build a Hankel matrix")
+    if data.size < 3:
+        raise ValueError("At least three samples are required to build a Hankel matrix")
+
+    n = data.size
+    if embedding_window_length is None:
+        embedding_window_length = max(3, n // 2)
+    if not (2 < embedding_window_length <= n / 2):
+        raise ValueError(f"embedding_window_length must satisfy 2 < L <= N/2, got L={embedding_window_length}, N={n}")
+
+    L = int(embedding_window_length)
+    K = n - L + 1
+    hankel = np.empty((L, K), dtype=float)
+    for row_index in range(L):
+        hankel[row_index, :] = data[row_index : row_index + K]
+    return hankel
+
+
+def build_midpoint_time_series_windows(
+    df: pd.DataFrame | pd.Series,
+    window: str,
+    overlap: str | pd.Timedelta | None = None,
+    timestamp_col: str = "timestamp",
+    *,
+    count_col: str | None = None,
+    sampling_period: str | pd.Timedelta | None = None,
+) -> pd.DataFrame:
+    """Construct a midpoint-based overlapping time series after the Fano window has been fixed.
+
+    The overlap is intentionally inferred from the dataset sampling period; the user cannot set it
+    directly. The downstream requirement is a strict one-sampling-period overlap, which implies
+    `stride = window - sampling_period`.
+    """
+    if isinstance(df, pd.Series):
+        timestamps = pd.to_datetime(df, errors="coerce").dropna().sort_values()
+    else:
+        if timestamp_col not in df.columns:
+            raise KeyError(f"Column {timestamp_col!r} was not found in the input DataFrame")
+        timestamps = pd.to_datetime(df[timestamp_col], errors="coerce").dropna().sort_values()
+
+    if timestamps.empty:
+        return pd.DataFrame(columns=["bin_id", "bin_start", "bin_end", "midpoint", "window", "count", "intensity", "stride", "overlap", "sampling_period"])
+
+    if overlap is not None:
+        warnings.warn(
+            "Explicit overlap values are deprecated and ignored; the dataset sampling period defines the overlap as one full sampling interval.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
+    window_td = _window_to_timedelta(window)
+    sampling_period_td = pd.to_timedelta(sampling_period) if sampling_period is not None else sampling_period_selection(timestamps)
+    if sampling_period_td <= pd.Timedelta(0):
+        raise ValueError("sampling_period must be strictly positive for overlapping-window generation")
+
+    # The fixed-width operational window can legitimately be as small as the minimum enterprise
+    # cadence. In that degenerate case there is no strictly smaller sampling period to overlap by,
+    # so we fall back to adjacent windows rather than raising a ValueError.
+    if sampling_period_td >= window_td:
+        sampling_period_td = window_td
+        overlap_td = pd.Timedelta(0)
+        stride_td = window_td
+    else:
+        overlap_td = sampling_period_td
+        stride_td = window_td - overlap_td
+
+    first_ts = timestamps.min()
+    last_ts = timestamps.max()
+    starts = pd.date_range(first_ts, last_ts, freq=stride_td)
+    rows: list[dict[str, Any]] = []
+
+    for idx, start in enumerate(starts, start=1):
+        end = start + window_td
+        segment = timestamps[(timestamps >= start) & (timestamps < end)]
+        count = int(segment.size)
+        midpoint = start + (end - start) / 2
+        rows.append(
+            {
+                "bin_id": idx,
+                "bin_start": start,
+                "bin_end": end,
+                "midpoint": midpoint,
+                "window": window,
+                "count": count,
+                "intensity": round(float(count / _window_unit_value(window)), 3),
+                "stride": stride_td,
+                "overlap": overlap_td,
+                "sampling_period": sampling_period_td,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["bin_id", "bin_start", "bin_end", "midpoint", "window", "count", "intensity", "stride", "overlap", "sampling_period"])
+
+    frame = pd.DataFrame(rows)
+    return frame[["bin_id", "bin_start", "bin_end", "midpoint", "window", "count", "intensity", "stride", "overlap", "sampling_period"]].reset_index(drop=True)
+
+
+def build_overlapping_time_series_windows(
+    df: pd.DataFrame | pd.Series,
+    window: str,
+    overlap: str | pd.Timedelta | None = None,
+    timestamp_col: str = "timestamp",
+    *,
+    count_col: str | None = None,
+    sampling_period: str | pd.Timedelta | None = None,
+) -> pd.DataFrame:
+    """Backward-compatible alias for the downstream overlap refinement stage.
+
+    Explicit overlap values are deprecated: the workflow now derives the overlap as one full sampling
+    period from the data using `sampling_period_selection()`. The returned frame includes `midpoint` for
+    SSA-ready analysis while preserving the original `bin_start`/`bin_end` values used in the fixed-width
+    window logic.
+    """
+    if overlap is not None:
+        warnings.warn(
+            "Explicit overlap values are ignored and deprecated; one sampling period is inferred from the timestamps.",
+            FutureWarning,
+            stacklevel=2,
+        )
+    return build_midpoint_time_series_windows(
+        df,
+        window,
+        overlap=overlap,
+        timestamp_col=timestamp_col,
+        count_col=count_col,
+        sampling_period=sampling_period,
     )
 
 
@@ -605,6 +890,39 @@ def build_arrival_intensity_series(
     return bin_time_series_for_window(df, window, timestamp_col=timestamp_col)
 
 
+def _phase1_valid_windows(table: pd.DataFrame) -> list[pd.Series]:
+    """Return the contiguous ascending window sequence that stays inside the near-Poisson band.
+
+    The project requirement is intentionally simple and repeatable:
+    1. start at the smallest candidate window,
+    2. keep advancing while the local Fano factor remains close to 1.0,
+    3. select the largest acceptable candidate that still yields an integer number of windows per day.
+    """
+    ordered = table.sort_values("window_minutes", kind="mergesort").reset_index(drop=True)
+    accepted: list[pd.Series] = []
+    for _, row in ordered.iterrows():
+        avg_fano = row.get("average_local_fano")
+        if pd.isna(avg_fano):
+            continue
+
+        value = float(avg_fano)
+        if DEFAULT_POISSON_FANO_LOWER_BOUND <= value <= DEFAULT_POISSON_FANO_UPPER_BOUND:
+            accepted.append(row)
+            continue
+        break
+
+    return accepted
+
+
+def _day_integral_window(rows: list[pd.Series]) -> pd.Series | None:
+    if not rows:
+        return None
+    integral_rows = [row for row in rows if math.isclose(1440.0 / float(row["window_minutes"]), round(1440.0 / float(row["window_minutes"])), abs_tol=1e-9)]
+    if integral_rows:
+        return max(integral_rows, key=lambda row: float(row["window_minutes"]))
+    return rows[-1]
+
+
 def select_largest_window_in_fano_acceptance_interval(
     df: pd.DataFrame | pd.Series,
     timestamp_col: str = "timestamp",
@@ -614,17 +932,14 @@ def select_largest_window_in_fano_acceptance_interval(
     min_events: int | None = None,
     target_pass_rate: float | None = None,
     tau_block: str | pd.Timedelta = DEFAULT_TAU_BLOCK,
+    home_base: str = DEFAULT_HOME_BASE,
     confidence: float = 0.95,
 ) -> dict[str, Any]:
-    """Select the largest admissible window whose Fano value falls within the reference acceptance region.
+    """Select the operational window using the phase-based Poisson scan described in the project spec.
 
-    This method supports two modes:
-    1. table mode: receives the Fano/window table produced by acceptable_over_dispersed_window_size()
-    2. raw-data mode: recomputes the table from timestamps for backward compatibility
-
-    In both cases, the reference window is the admissible window whose average local Fano factor is
-    closest to 1. The chosen window is the largest admissible window whose Fano value remains within
-    the reference window's acceptance region. If none do, the reference window is retained.
+    Phase 1 starts at the smallest candidate window and keeps advancing while the Fano factor stays in
+    the Poisson acceptance band. The largest accepted candidate that yields an integer number of
+    windows per day is then chosen; if that fails, the last accepted window is retained as a fallback.
     """
     table_mode = isinstance(df, pd.DataFrame) and {"window", "average_local_fano"}.issubset(df.columns)
 
@@ -638,23 +953,19 @@ def select_largest_window_in_fano_acceptance_interval(
         if table.empty:
             raise ValueError("No windows were available in the Fano table for selection.")
 
-        reference_row = table[table["average_local_fano"].notna()].sort_values("fano_deviation", kind="mergesort").iloc[0]
+        candidate_rows = table[table["average_local_fano"].notna()].copy()
+        if candidate_rows.empty:
+            raise ValueError("No candidate windows had a usable average local Fano value.")
+
+        reference_row = candidate_rows.sort_values("fano_deviation", kind="mergesort").iloc[0]
         reference_window = str(reference_row["window"])
         reference_fano = float(reference_row["average_local_fano"])
         lower = float(reference_row["fano_lower"]) if "fano_lower" in reference_row and pd.notna(reference_row["fano_lower"]) else reference_fano
         upper = float(reference_row["fano_upper"]) if "fano_upper" in reference_row and pd.notna(reference_row["fano_upper"]) else reference_fano
 
-        compatible = table[table["average_local_fano"].notna()].copy()
-        compatible = compatible[
-            (compatible["average_local_fano"] >= lower) & (compatible["average_local_fano"] <= upper)
-        ].copy()
-
-        if compatible.empty:
-            chosen_row = reference_row
-            selection_status = "reference_window_retained"
-        else:
-            chosen_row = compatible.sort_values("window_minutes", ascending=False, kind="mergesort").iloc[0]
-            selection_status = "largest_window_in_reference_acceptance_region"
+        accepted_rows = _phase1_valid_windows(table)
+        chosen_row = _day_integral_window(accepted_rows) if accepted_rows else reference_row
+        selection_status = "reference_window_retained" if chosen_row is reference_row and not accepted_rows else "phase1_poisson_sequence"
 
         chosen_window = str(chosen_row["window"])
         return {
@@ -695,48 +1006,45 @@ def select_largest_window_in_fano_acceptance_interval(
             continue
         fanos = _local_fano_factors(counts, window, tau_block)
         avg_fano = float(sum(fanos) / len(fanos)) if fanos else 1.0
+        interval = fano_acceptance_interval(counts, window=window, tau_block=tau_block, confidence=confidence)
         row = {
             "window": window,
+            "window_minutes": float(_window_to_timedelta(window).total_seconds() / 60.0),
             "average_local_fano": avg_fano,
             "fano_deviation": abs(avg_fano - 1.0),
+            "fano_lower": float(interval["fano_lower"]),
+            "fano_upper": float(interval["fano_upper"]),
         }
         all_rows.append(row)
 
     if not all_rows:
         raise ValueError("No time windows were available for Fano-based selection.")
 
-    base_row = min(all_rows, key=lambda row: row["fano_deviation"])
-    base_window = base_row["window"]
-    base_counts = _count_buckets_for_window(timestamps, base_window)
-    base_interval = fano_acceptance_interval(base_counts, window=base_window, tau_block=tau_block, confidence=confidence)
-    lower = base_interval["fano_lower"]
-    upper = base_interval["fano_upper"]
+    ordered_rows = sorted(all_rows, key=lambda row: row["window_minutes"])
+    base_row = min(ordered_rows, key=lambda row: row["fano_deviation"])
+    accepted_rows = []
+    for row in ordered_rows:
+        avg_fano = float(row["average_local_fano"])
+        if DEFAULT_POISSON_FANO_LOWER_BOUND <= avg_fano <= DEFAULT_POISSON_FANO_UPPER_BOUND:
+            accepted_rows.append(row)
+            continue
+        break
 
-    compatible = []
-    for row in all_rows:
-        fano = float(row["average_local_fano"])
-        if lower <= fano <= upper:
-            compatible.append(row)
-
-    if compatible:
-        chosen = max(compatible, key=lambda row: _window_to_timedelta(row["window"]).total_seconds())
-        selection_status = "largest_window_in_reference_acceptance_region"
-    else:
-        chosen = base_row
-        selection_status = "reference_window_retained"
+    chosen_row = _day_integral_window(accepted_rows) if accepted_rows else base_row
+    selection_status = "reference_window_retained" if chosen_row is base_row and not accepted_rows else "phase1_poisson_sequence"
 
     return {
-        "reference_window": base_window,
+        "reference_window": base_row["window"],
         "reference_fano": base_row["average_local_fano"],
-        "selected_window": chosen["window"],
-        "average_local_fano": chosen["average_local_fano"],
-        "fano_lower": lower,
-        "fano_upper": upper,
-        "window_metrics": pd.DataFrame(all_rows),
+        "selected_window": chosen_row["window"],
+        "average_local_fano": chosen_row["average_local_fano"],
+        "fano_lower": float(base_row["fano_lower"]),
+        "fano_upper": float(base_row["fano_upper"]),
+        "window_metrics": pd.DataFrame(ordered_rows),
         "selected_row": {
-            "window": chosen["window"],
-            "average_local_fano": chosen["average_local_fano"],
-            "fano_deviation": abs(chosen["average_local_fano"] - 1.0),
+            "window": chosen_row["window"],
+            "average_local_fano": chosen_row["average_local_fano"],
+            "fano_deviation": abs(chosen_row["average_local_fano"] - 1.0),
         },
         "selection_status": selection_status,
         "confidence": confidence,
@@ -776,6 +1084,18 @@ def summarize_integer_alignment(
             "aligned_series": _empty_arrival_frame(),
             "status": "no_data",
             "message": "No valid timestamps were available for the time-binning workflow.",
+        }
+    if len(timestamps) < max(1, min_events):
+        return {
+            "algorithm_window": None,
+            "algorithm_result": None,
+            "alignment_window": None,
+            "alignment_result": None,
+            "alignment_applied": False,
+            "original_series": _empty_arrival_frame(),
+            "aligned_series": _empty_arrival_frame(),
+            "status": "sparse_data",
+            "message": "Not enough valid events were available to define a stable enterprise time-binning window.",
         }
 
     try:
@@ -881,7 +1201,12 @@ def tseda_dataset_export(
     source_path: str | Path | None = None,
     output_path: str | Path | None = None,
 ) -> Path:
-    """Export only the bin_end and intensity fields for downstream TS-EDA consumers."""
+    """Export a midpoint-based timestamp/intensity series for downstream TS-EDA consumers.
+
+    The exported timestamp is `midpoint` when available, otherwise `bin_end`. This preserves the
+    post-Fano overlap semantics described by the requirement spec while keeping compatibility with
+    the legacy fixed-width export shape.
+    """
     if source_path is None and dataset_name is None:
         raise ValueError("A dataset name or a source path must be provided")
 
@@ -913,11 +1238,13 @@ def tseda_dataset_export(
 
     input_path = Path(input_path)
     frame = pd.read_csv(input_path)
-    missing = sorted({"bin_end", "intensity"}.difference(frame.columns))
+
+    timestamp_col = "midpoint" if "midpoint" in frame.columns else "bin_end"
+    missing = sorted({timestamp_col, "intensity"}.difference(frame.columns))
     if missing:
         raise KeyError(f"Dataset {input_path} is missing required columns: {missing}")
 
-    export_frame = frame[["bin_end", "intensity"]].copy()
+    export_frame = frame[[timestamp_col, "intensity"]].copy().rename(columns={timestamp_col: "timestamp"})
     if output_path is not None:
         destination = Path(output_path)
     elif output_name is not None:

@@ -8,11 +8,3 @@ prepared_dataset_dir: /home/rajiv/programming/kmds-dataset-util/data/prepared/he
 output:
   path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data
   format: csv
-raw_data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
-data_dictionary_path: /home/rajiv/programming/kmds-dataset-util/data/raw/healthcare-analytics-patient-flow-data/data_dictionary_raw.csv
-arrival_intensity_path: /home/rajiv/programming/kmds-dataset-util/data/prepared/healthcare-analytics-patient-flow-data/hospital_arrival_intensity.csv
-arrival_intensity_window: 15m
-arrival_intensity_reference_window: 5m
-arrival_intensity_fano_interval:
-- 0.8958460217197702
-- 1.1097989842066647

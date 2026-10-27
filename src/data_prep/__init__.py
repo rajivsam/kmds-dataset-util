@@ -1,5 +1,11 @@
 """Public API for the KMDS dataset utilities."""
 
+from data_prep.fanno_factor_selection import (
+    DEFAULT_AGGREGATION_WINDOW,
+    DEFAULT_CONFIDENCE,
+    DEFAULT_MIN_AGGREGATION_WINDOWS,
+    select_poisson_operating_window,
+)
 from data_prep.count_timeseries import (
     DEFAULT_HOME_BASE,
     DEFAULT_TAU_BLOCK,
@@ -9,9 +15,13 @@ from data_prep.count_timeseries import (
     align_to_integer_bin_grid,
     bin_time_series_for_window,
     build_arrival_intensity_series,
+    build_hankel_matrix_from_series,
+    build_midpoint_time_series_windows,
+    build_overlapping_time_series_windows,
     expected_poisson_zeros,
     fano_acceptance_interval,
     find_optimal_time_bucket,
+    sampling_period_selection,
     optimize_arrival_binning,
     plot_window_fano_factors,
     select_count_binning_window,
@@ -21,6 +31,9 @@ from data_prep.count_timeseries import (
 )
 
 __all__ = [
+    "DEFAULT_AGGREGATION_WINDOW",
+    "DEFAULT_CONFIDENCE",
+    "DEFAULT_MIN_AGGREGATION_WINDOWS",
     "ENTERPRISE_WINDOWS",
     "WINDOWS",
     "DEFAULT_HOME_BASE",
@@ -29,13 +42,18 @@ __all__ = [
     "align_to_integer_bin_grid",
     "bin_time_series_for_window",
     "build_arrival_intensity_series",
+    "build_hankel_matrix_from_series",
+    "build_midpoint_time_series_windows",
+    "build_overlapping_time_series_windows",
     "expected_poisson_zeros",
     "fano_acceptance_interval",
     "find_optimal_time_bucket",
+    "sampling_period_selection",
     "optimize_arrival_binning",
     "plot_window_fano_factors",
     "select_count_binning_window",
     "select_largest_window_in_fano_acceptance_interval",
+    "select_poisson_operating_window",
     "summarize_integer_alignment",
     "tseda_dataset_export",
 ]

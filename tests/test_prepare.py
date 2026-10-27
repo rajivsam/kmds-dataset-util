@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import data_prep.prepare as prepare_module
 from data_prep.prepare import prepare_dataset
@@ -19,9 +20,13 @@ def test_clean_count_timeseries_api_has_only_the_lean_public_surface():
         "acceptable_over_dispersed_window_size",
         "align_to_integer_bin_grid",
         "build_arrival_intensity_series",
+        "build_hankel_matrix_from_series",
+        "build_midpoint_time_series_windows",
+        "build_overlapping_time_series_windows",
         "find_optimal_time_bucket",
         "optimize_arrival_binning",
         "plot_window_fano_factors",
+        "sampling_period_selection",
         "select_count_binning_window",
         "summarize_integer_alignment",
         "tseda_dataset_export",
@@ -179,6 +184,104 @@ def test_select_largest_window_in_fano_acceptance_interval_uses_precomputed_tabl
     assert selection["reference_window"] in table["window"].tolist()
     assert selection["selected_window"] in table["window"].tolist()
     assert selection["selected_window"] == selection["reference_window"] or selection["selected_window"] in {"15m", "30m", "1h"}
+
+
+def test_select_largest_window_in_fano_acceptance_interval_uses_phase1_day_integral_sequence():
+    from data_prep.count_timeseries import select_largest_window_in_fano_acceptance_interval
+
+    table = pd.DataFrame(
+        {
+            "window": ["1m", "5m", "15m"],
+            "window_minutes": [1.0, 5.0, 15.0],
+            "average_local_fano": [0.995, 1.02, 1.10],
+            "fano_lower": [0.9, 0.9, 0.9],
+            "fano_upper": [1.1, 1.1, 1.1],
+        }
+    )
+
+    selection = select_largest_window_in_fano_acceptance_interval(table, home_base="5m")
+
+    assert selection["reference_window"] == "1m"
+    assert selection["selected_window"] == "15m"
+    assert selection["selection_status"] == "phase1_poisson_sequence"
+
+
+def test_build_overlapping_time_series_windows_uses_stride_window_minus_overlap():
+    from data_prep.count_timeseries import build_overlapping_time_series_windows
+
+    timestamps = pd.date_range("2024-01-01 00:00:00", periods=25, freq="1min")
+    result = build_overlapping_time_series_windows(
+        pd.DataFrame({"timestamp": timestamps}),
+        window="15m",
+    )
+
+    assert list(result.columns) == ["bin_id", "bin_start", "bin_end", "midpoint", "window", "count", "intensity", "stride", "overlap", "sampling_period"]
+    assert result["bin_id"].tolist() == [1, 2]
+    assert result["count"].tolist() == [15, 11]
+    assert result["stride"].tolist() == [pd.Timedelta("14min"), pd.Timedelta("14min")]
+    assert result["overlap"].tolist() == [pd.Timedelta("1min"), pd.Timedelta("1min")]
+    assert result["bin_start"].tolist() == [
+        pd.Timestamp("2024-01-01 00:00:00"),
+        pd.Timestamp("2024-01-01 00:14:00"),
+    ]
+    assert result["midpoint"].tolist() == [
+        pd.Timestamp("2024-01-01 00:07:30"),
+        pd.Timestamp("2024-01-01 00:21:30"),
+    ]
+
+
+def test_sampling_period_selection_uses_smallest_allowable_window():
+    from data_prep.count_timeseries import sampling_period_selection
+
+    period = sampling_period_selection()
+
+    assert period == pd.Timedelta("1min")
+
+
+def test_build_overlapping_time_series_windows_infers_overlap_from_sampling_interval():
+    from data_prep.count_timeseries import build_overlapping_time_series_windows
+
+    timestamps = pd.date_range("2024-01-01 00:00:00", periods=20, freq="1min")
+    result = build_overlapping_time_series_windows(pd.DataFrame({"timestamp": timestamps}), window="15m")
+
+    assert result["overlap"].nunique() == 1
+    assert result["overlap"].iloc[0] == pd.Timedelta("1min")
+    assert result["stride"].iloc[0] == pd.Timedelta("14min")
+    assert result["sampling_period"].nunique() == 1
+    assert result["sampling_period"].iloc[0] == pd.Timedelta("1min")
+
+
+def test_build_overlapping_time_series_windows_handles_minimum_window_without_overlap():
+    from data_prep.count_timeseries import build_overlapping_time_series_windows
+
+    timestamps = pd.date_range("2024-01-01 00:00:00", periods=4, freq="1min")
+    result = build_overlapping_time_series_windows(pd.DataFrame({"timestamp": timestamps}), window="1m", sampling_period="1m")
+
+    assert result["overlap"].nunique() == 1
+    assert result["overlap"].iloc[0] == pd.Timedelta(0)
+    assert result["stride"].nunique() == 1
+    assert result["stride"].iloc[0] == pd.Timedelta("1min")
+    assert result["sampling_period"].nunique() == 1
+    assert result["sampling_period"].iloc[0] == pd.Timedelta("1min")
+    assert result["count"].tolist() == [1, 1, 1, 1]
+
+
+def test_build_overlapping_time_series_windows_ignores_legacy_overlap_override():
+    from data_prep.count_timeseries import build_overlapping_time_series_windows
+
+    timestamps = pd.date_range("2024-01-01 00:00:00", periods=12, freq="1min")
+    with pytest.warns(FutureWarning, match="Explicit overlap values are ignored"):
+        result = build_overlapping_time_series_windows(
+            pd.DataFrame({"timestamp": timestamps}),
+            window="15m",
+            overlap="2m",
+        )
+
+    assert result["overlap"].nunique() == 1
+    assert result["overlap"].iloc[0] == pd.Timedelta("1min")
+    assert result["stride"].iloc[0] == pd.Timedelta("14min")
+    assert result["sampling_period"].nunique() == 1
+    assert result["sampling_period"].iloc[0] == pd.Timedelta("1min")
 
 
 def test_hospital_dataset_allows_larger_window_inside_acceptance_band():
@@ -344,6 +447,27 @@ def test_build_arrival_intensity_series_drops_partial_final_window_for_multi_day
     assert series["bin_end"].max() == pd.Timestamp("2024-01-09 00:00:00")
 
 
+def test_build_arrival_intensity_series_snaps_bins_to_midnight_boundaries():
+    from data_prep.timeseries import build_arrival_intensity_series
+
+    timestamps = pd.to_datetime([
+        "2024-01-01 01:04:00",
+        "2024-01-01 01:20:00",
+        "2024-01-02 00:15:00",
+        "2024-01-02 12:30:00",
+    ])
+    series = build_arrival_intensity_series(
+        pd.DataFrame({"timestamp": timestamps}),
+        windows=["30m"],
+        min_events=1,
+        target_pass_rate=0.5,
+    )
+
+    assert series["bin_start"].min() == pd.Timestamp("2024-01-01 00:00:00")
+    assert series["bin_end"].max() == pd.Timestamp("2024-01-03 00:00:00")
+    assert set(series["bin_start"].dt.strftime("%H:%M:%S").unique()[:3]) == {"00:00:00", "00:30:00", "01:00:00"}
+
+
 def test_find_optimal_time_bucket_returns_verbose_selection_log():
     from data_prep.timeseries import find_optimal_time_bucket
 
@@ -380,7 +504,7 @@ def test_count_timeseries_exports_only_bin_end_and_intensity_columns(tmp_path):
     )
 
     exported = pd.read_csv(result_path)
-    assert list(exported.columns) == ["bin_end", "intensity"]
+    assert list(exported.columns) == ["timestamp", "intensity"]
     assert result_path.name == "hospital_arrival_intensity_tseda.csv"
     assert result_path.exists()
-    assert exported["bin_end"].tolist() == ["2024-01-01 00:05:00", "2024-01-01 00:10:00"]
+    assert exported["timestamp"].tolist() == ["2024-01-01 00:05:00", "2024-01-01 00:10:00"]

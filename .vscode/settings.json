@@ -22,6 +22,35 @@
     "/^cat configs/seattle-911-prep\\.yaml; python - <<'E'\nimport json\nnb=json\\.load\\(open\\('notebooks/seattle_911_calls_eda\\.ipynb'\\)\\)\nfor i,c in enumerate\\(nb\\['cells'\\]\\):\n    print\\('---',i,c\\['cell_type'\\]\\);print\\(''\\.join\\(c\\['source'\\]\\)\\)\nE$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^python - <<'PY'\nimport json, pathlib\nfor p in \\[pathlib\\.Path\\('notebooks/health_care_anlytics_eda\\.ipynb'\\), pathlib\\.Path\\('notebooks/seattle_911_calls_eda\\.ipynb'\\)\\]:\n    data=json\\.loads\\(p\\.read_text\\(\\)\\)\n    print\\('\\\\nFILE', p\\)\n    for i,cell in enumerate\\(data\\.get\\('cells', \\[\\]\\)\\):\n        src=''\\.join\\(cell\\.get\\('source',\\[\\]\\)\\)\n        if any\\(k in src\\.lower\\(\\) for k in \\['hankel','overlap','window','arrival'\\]\\) or 'tseda' in src\\.lower\\(\\):\n            print\\('CELL', i\\)\n            print\\(src\\[:800\\]\\)\n            print\\('---'\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && python - <<'PY'\nimport pandas as pd\nfrom pathlib import Path\nfrom data_prep\\.count_timeseries import sampling_period_selection\n\nfor path in \\[\n    Path\\('data/prepared/healthcare-analytics-patient-flow-data/hospital_arrival_intensity_tseda\\.csv'\\),\n    Path\\('data/prepared/seattle-police-department-911-incident-response/seattle_911_calls_arrival_intensity_tseda\\.csv'\\),\n\\]:\n    if not path\\.exists\\(\\):\n        print\\(path, 'MISSING'\\)\n        continue\n    df = pd\\.read_csv\\(path\\)\n    ts = pd\\.to_datetime\\(df\\['timestamp'\\], errors='coerce'\\)\\.dropna\\(\\)\\.sort_values\\(\\)\n    print\\(path\\.name, '->', sampling_period_selection\\(ts\\)\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && python - <<'PY'\nimport pandas as pd\nfrom pathlib import Path\nfrom data_prep\\.count_timeseries import sampling_period_selection\n\n# hospital raw\nraw_h = Path\\('data/raw/healthcare-analytics-patient-flow-data/healthcare_analytics_patient_flow_data\\.csv'\\)\nif raw_h\\.exists\\(\\):\n    df = pd\\.read_csv\\(raw_h\\)\n    ts = pd\\.to_datetime\\(df\\['Patient Admission Date'\\] \\+ ' ' \\+ df\\['Patient Admission Time'\\], errors='coerce'\\)\\.dropna\\(\\)\\.sort_values\\(\\)\n    print\\('hospital raw ->', sampling_period_selection\\(ts\\)\\)\n\nraw_s = Path\\('data/raw/seattle-police-department-911-incident-response/seattle_911_calls\\.csv'\\)\nif raw_s\\.exists\\(\\):\n    df = pd\\.read_csv\\(raw_s\\)\n    cols = \\['cad_event_original_time_queued','Event Clearance Date','event_clearance_date','At Scene Time','event_original_time_queued'\\]\n    col = next\\(\\(c for c in cols if c in df\\.columns\\), None\\)\n    if col:\n        ts = pd\\.to_datetime\\(df\\[col\\], errors='coerce'\\)\\.dropna\\(\\)\\.sort_values\\(\\)\n        print\\('seattle raw ->', sampling_period_selection\\(ts\\)\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "jupyter": true,
+    "/^source \\.venv/bin/activate && python - <<'PY'\nimport pandas as pd\nfrom data_prep\\.count_timeseries import sampling_period_selection, acceptable_over_dispersed_window_size, select_largest_window_in_fano_acceptance_interval\nproject_root='\\.'\nraw = pd\\.read_csv\\('data/raw/seattle-police-department-911-incident-response/911\\.csv'\\) if False else None\n# read the actual prep dataset if exists\nfrom pathlib import Path\npath = Path\\('data/prepared/seattle-police-department-911-incident-response/seattle_911_calls_raw_last2000\\.csv'\\)\nprint\\('exists raw last2000', path\\.exists\\(\\)\\)\n# create simple data and inspect\nsample = pd\\.date_range\\('2024-01-01', periods=100, freq='1min'\\)\nprint\\(sampling_period_selection\\(pd\\.DataFrame\\(\\{'timestamp': sample\\}\\)\\)\\)\nprint\\(sampling_period_selection\\(\\)\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && pytest -q tests/test_prepare\\.py -k 'build_overlapping_time_series_windows or sampling_period_selection'$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^source \\.venv/bin/activate && jupyter nbconvert --to notebook --execute notebooks/seattle_911_calls_eda\\.ipynb --inplace$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^python - <<'PY'\nimport json\nfrom pathlib import Path\np=Path\\('notebooks/seattle_911_calls_eda\\.ipynb'\\)\nnb=json\\.loads\\(p\\.read_text\\(\\)\\)\nfor i,cell in enumerate\\(nb\\['cells'\\]\\[:20\\]\\):\n    src=''\\.join\\(cell\\.get\\('source',\\[\\]\\)\\)\n    print\\(f'CELL \\{i\\}: \\{cell\\[\"cell_type\"\\]\\} len=\\{len\\(src\\)\\}'\\)\n    first=src\\.splitlines\\(\\)\\[:5\\]\n    print\\('\\\\n'\\.join\\(first\\)\\)\n    print\\('---'\\)\nPY$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

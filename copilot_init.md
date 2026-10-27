@@ -8,7 +8,7 @@ This workspace contains the current KMDS dataset utility package as implemented 
 - Source code directory: `src/`
 - Main package: `data_prep`
 - Tests: `tests/`
-- Current implementation focus: config validation, raw dataset download, prepared data output, and dictionary generation
+- Current implementation focus: config validation, raw dataset download, prepared data output, dictionary generation, and Fano-based operating-window screening
 
 ## Local environment
 
@@ -48,15 +48,65 @@ cd /home/rajiv/programming/kmds-dataset-util
 .venv/bin/python -m pytest -q
 ```
 
-## Current verified status
+## Current Fano-factor selection design
 
-The project currently passes the existing test suite:
+`data_prep.fanno_factor_selection.select_poisson_operating_window()` is the current API for screening operational windows under the Fano-factor design. It is separate from the older enterprise count-binning and overlap/Hankel helpers in `data_prep.count_timeseries`.
+
+The API reads an event-arrival CSV and accepts a timestamp column, candidate intervals, a preferred aggregation interval, a minimum sample-window count, a confidence level, and an optional plot path. Defaults are:
+
+- aggregation interval: `1min`
+- minimum complete non-overlapping candidate windows: `30`
+- confidence level: `0.90` (`confidence`, with `alpha = 1 - confidence`)
+
+For each candidate interval, the implementation:
+
+1. Sorts the candidate intervals from shortest to longest.
+2. Counts complete non-overlapping candidate windows in the event-time span. Candidates below `min_aggregation_windows` are reported as insufficient and are not tested.
+3. Counts arrivals in the candidate windows, including empty windows, and computes the sample Fano factor as unbiased sample variance divided by sample mean.
+4. Computes two-sided chi-squared limits with `n - 1` degrees of freedom and the configured confidence.
+5. Marks the candidate acceptable when its Fano factor lies within those limits.
+
+The result contains the full metrics table, an `acceptable_windows` list containing every passing candidate, and a plot with the Fano curve, confidence-bound band, and Poisson reference at `F = 1`. It does not choose one window from that list. The user selects a window before doing the separate downstream TS-EDA/Hankel step.
+
+The hospital EDA notebook combines `Patient Admission Date` and `Patient Admission Time` to construct arrival timestamps, filters to the modal year, writes the event CSV, and calls this API. Its confidence level is exposed as `confidence_level` in the notebook cell, and the following cell displays the Fano-factor-by-window table. The notebook does not perform the downstream TS-EDA selection/export.
+
+Relevant implementation and coverage:
+
+- `src/data_prep/fanno_factor_selection.py`
+- `tests/test_fanno_factor_selection.py`
+- `notebooks/health_care_anlytics_eda.ipynb`
+- `fanno_factor_selection.md`
+
+## Before vs after: midnight-anchored binning
+
+The old behavior effectively anchored to the first observed timestamp instead of the start of the operational day. That produced a drifting phase and an inconsistent number of bins across days.
+
+Example of the broken behavior:
 
 ```text
-37 passed, 1 warning in 0.99s
+old raw buckets
+2024-01-01 01:04:00 -> bucket 2024-01-01 01:00:00
+2024-01-01 01:20:00 -> bucket 2024-01-01 01:00:00
+2024-01-02 00:15:00 -> bucket 2024-01-02 00:00:00
+2024-01-02 12:30:00 -> bucket 2024-01-02 12:00:00
 ```
 
-The warning is a pandas deprecation warning from an older `30d` frequency alias in a sparse-data regression, not a failing logic issue.
+This is not a true day-aligned operational grid because the first bucket is offset from midnight and the phase drifts from the first arrival.
+
+The corrected behavior snaps the grid to the daily cycle boundary and preserves the same interval cadence each day:
+
+```text
+corrected midnight-anchored buckets
+2024-01-01 00:00:00 -> 2024-01-01 00:30:00
+2024-01-01 00:30:00 -> 2024-01-01 01:00:00
+2024-01-01 01:00:00 -> 2024-01-01 01:30:00
+2024-01-01 01:30:00 -> 2024-01-01 02:00:00
+...
+2024-01-02 00:00:00 -> 2024-01-02 00:30:00
+2024-01-02 00:30:00 -> 2024-01-02 01:00:00
+```
+
+The corrected series therefore starts at `00:00:00`, advances by the selected interval, and keeps the same number of bins for each operational day.
 
 ## Key implementation files
 
@@ -80,19 +130,19 @@ The warning is a pandas deprecation warning from an older `30d` frequency alias 
 - Creates prepared CSV/Parquet outputs from pandas DataFrames.
 - Writes dictionary files alongside staged or prepared data when metadata is available.
 - Uses local LLM-backed logic to build a data dictionary from dataset/README context when available.
-- Selects an operational time-window from a fixed enterprise ladder using count-density validation (`5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `8h`, `12h`, `1d`, `2d`, `3d`, `5d`, `1w`, `2w`, `4w`).
+- Retains the older count-binning API, which searches a fixed enterprise ladder; this is distinct from the CSV-based Fano acceptance API described above.
 - Uses a day-anchored phase-1 resample so the original raw binning process starts from the operational day boundary rather than the first observed arrival timestamp.
 - Performs a second-stage integer alignment step after the density search so the chosen grid is anchored to midnight or cycle boundaries and preserves an integer number of bins per day.
 - Produces uniform count-binned arrival-intensity series with `bin_id`, `bin_start`, `bin_end`, `window`, `count`, and `intensity` columns.
 - Uses window-aware intensity scaling: the intensity is normalized by the selected unit (`count per minute`, `count per hour`, `count per day`, `count per week`) rather than assuming every window is an hour.
 - Reports both the original algorithm output and the post-alignment output together via `summarize_integer_alignment(...)` so the user can compare phase 1 vs phase 2 directly.
-- Includes notebook workflows for both the hospital dataset and the Seattle 911 2016 dataset that print the selected window, the window unit, the intensity unit, the raw phase-1 result, and the aligned phase-2 result.
+- The Seattle 911 notebook uses the older count-binning and alignment workflow. The hospital notebook uses the newer Fano acceptance API and leaves the downstream TS-EDA step to the user.
 
 ## Important implementation notes
 
 - The project uses `setuptools` with a `src` layout.
 - Pytest is configured with `pythonpath = ["src"]`.
-- The package depends on `PyYAML`, the official `kaggle` client, and `pandas`.
+- The package depends on `PyYAML`, the official `kaggle` client, `pandas`, `scipy`, and `matplotlib`.
 - Kaggle credentials are read from `~/.kaggle/kaggle.json` or `~/.kaggle/access_token`.
 - `bootstrap_config()` creates a prepare workflow config with explicit `representation`, `task_characterization`, and output path settings.
 - `download_from_config()` loads a YAML config and verifies the result before returning the staging path.
@@ -133,7 +183,7 @@ The resulting output is a uniform-width, integer-sequenced series with:
 
 The summary metadata therefore makes it explicit whether the intensity is per minute, per hour, per day, or per week.
 
-This is currently exercised in both the healthcare and Seattle 911 EDA notebooks, where the dataset-specific arrival outputs are exported to `arrival_intensity.csv` under the prepared dataset directory and the notebook prints both the raw phase-1 output and the aligned phase-2 output.
+This older interface remains exercised in the Seattle 911 notebook. The hospital notebook uses the independent Fano screening flow described above, displays the Fano-factor-by-window table and plot, and does not perform a TS-EDA export.
 
 ## Current status and next likely work
 
